@@ -33,7 +33,7 @@ func echo(conn net.Conn) {
 		}
 		protoData := new(message.Message)
 		err = proto.Unmarshal(data[0:n], protoData)
-		fmt.Printf("Received Message %s, sending back\n", protoData.String())
+		// fmt.Printf("Received Message %s, sending back\n", protoData.String())
 		for _,v := range connections{
 			v.Write(data[0:n])
 		}

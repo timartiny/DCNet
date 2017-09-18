@@ -1,11 +1,14 @@
 package main
 
 import (
-	"bufio"
+	// "bufio"
 	"fmt"
 	"io"
 	"net"
 	"os"
+
+	"github.com/golang/protobuf/proto"
+	"./message"
 )
 
 var port = "0.0.0.0:9001"
@@ -13,9 +16,10 @@ var port = "0.0.0.0:9001"
 var connections []net.Conn
 
 func echo(conn net.Conn) {
-	r := bufio.NewReader(conn)
+	// r := bufio.NewReader(conn)
 	for {
-		line, err := r.ReadBytes(byte('\n'))
+		data := make([]byte, 4096)
+		n, err := conn.Read(data)
 		switch err {
 		case nil:
 			break
@@ -27,9 +31,11 @@ func echo(conn net.Conn) {
 			return
 			break
 		}
-		fmt.Printf("Received Message %s, sending back\n", string(line))
+		protoData := new(message.Message)
+		err = proto.Unmarshal(data[0:n], protoData)
+		fmt.Printf("Received Message %s, sending back\n", protoData.String())
 		for _,v := range connections{
-			v.Write(line)
+			v.Write(data[0:n])
 		}
 	}
 }

@@ -10,7 +10,8 @@ import (
 	"log"
 	"net"
 	"os"
-	"time"
+	"os/signal"
+	// "time"
 
 	"github.com/golang/protobuf/proto"
 	"./go-ecdh"
@@ -22,10 +23,11 @@ var pubKey crypto.PublicKey
 var privKey crypto.PrivateKey
 var curve ecdh.ECDH
 var sharedKeys map[string][]byte
+var conn net.Conn
 
 // receive handles the receiving of messages.
 // it puts the received data into a protobuf and passes it to a parsing function.
-func receive(conn net.Conn){
+func receive(){
 	// response := bufio.NewReader(conn)
 	for {
 		data := make([]byte, 4096)
@@ -47,23 +49,34 @@ func receive(conn net.Conn){
 		// fmt.Println("Received:", protoData.String())
 
 		// now we need to parse received message
-		go parseMessage(protoData, conn)
+		go parseMessage(protoData)
 	}
 }
 
 // parseMessage will take a message and connection and will determine how to
 // handle a message based on the type of the message. Some messages require 
 // immediate responses, and those are given.
-func parseMessage(msg *message.Message, conn net.Conn){
+func parseMessage(msg *message.Message){
 	if *msg.Type == 0{
+		//received a key
 		newKey := parseKey(msg.Data)
 
 		if newKey{
 			// now your key has to be sent in response
-			conn.SetReadDeadline(time.Now())
-			sendKey(conn)
-			conn.SetReadDeadline(time.Time{})
+			// conn.SetReadDeadline(time.Now())
+			m := &message.Message{
+				Data: curve.Marshal(pubKey),
+				Type: proto.Int32(0),
+			}
+			sendMessage(m)
+			// conn.SetReadDeadline(time.Time{})
 		}
+	}else if *msg.Type == 1{
+		//received a new message
+		fmt.Printf("Received: %s\n", msg.Data)
+	}else if *msg.Type == 3{
+		//received a disconnect message
+		delete(sharedKeys, string(msg.Data))
 	}
 }
 
@@ -116,14 +129,9 @@ func genKeys() {
 	privKey, pubKey, _  = curve.GenerateKey(rand.Reader)
 }
 
-// sendKey will handle sending out the public Keys, should be generalized for
-// sending a message
-func sendKey(conn net.Conn){
-	m := &message.Message{
-		Data: curve.Marshal(pubKey),
-		Type: proto.Int32(0),
-	}
-
+// sendMessage handles the sending of messages to the server, it will Marshal
+// the protobuf and then write it to the server.
+func sendMessage(m *message.Message){
 	data, err := proto.Marshal(m)
 	if err != nil {
 		log.Fatal("marshaling error: ", err)
@@ -133,38 +141,79 @@ func sendKey(conn net.Conn){
 	if err != nil{
 		log.Fatal("sending error: ", err)
 	}
-	fmt.Printf("Sent %d bytes for key\n", n)
+	fmt.Printf("Sent %d bytes\n", n)
+}
+
+func cleanup(){
+	m:= &message.Message{
+		Data: curve.Marshal(pubKey),
+		Type: proto.Int32(3),
+	}
+	sendMessage(m)
 }
 
 // main client method, establishes connection to server, allows user to type
 // messages to be sent.
 func main() {
-	conn, err := net.Dial("tcp", port)
+	var err error
+	conn, err = net.Dial("tcp", port)
 	if err != nil {
 		fmt.Println("ERROR", err)
 		os.Exit(1)
 	}
+	go receive()
+
+	sigChan := make(chan os.Signal, 1)
+	sigHandled := make(chan bool)
+	signal.Notify(sigChan, os.Interrupt)
+	go func(){
+		<- sigChan
+		cleanup()
+		sigHandled <- true
+	}()
 
 	curve = ecdh.NewCurve25519ECDH() 
 	genKeys()
-	sendKey(conn)
+	m := &message.Message{
+		Data: curve.Marshal(pubKey),
+		Type: proto.Int32(0),
+	}
+	sendMessage(m)
 
-	go receive(conn)
-	userInput := bufio.NewReader(os.Stdin)
+	inpChan := make(chan []byte)
+	go func(inpChan chan []byte){
+		for {
+			userInput := bufio.NewReader(os.Stdin)
+			userLine, err := userInput.ReadBytes(byte('\n'))
+				switch err {
+				case nil:
+					inpChan <- userLine
+				case io.EOF:
+					os.Exit(0)
+				default:
+					fmt.Println("ERROR", err)
+					os.Exit(1)
+				}
+		}
+	}(inpChan)
+
 	for {
 		// fmt.Print("Message: ")
-		userLine, err := userInput.ReadBytes(byte('\n'))
-		switch err {
-		case nil:
-			conn.SetReadDeadline(time.Now())
-			conn.Write(userLine)
-			conn.SetReadDeadline(time.Time{})
-			go receive(conn)
-		case io.EOF:
+		select{
+		case inp :=<- inpChan:
+			fmt.Println("about to send")
+			m = &message.Message{
+				Data: inp,
+				Type: proto.Int32(1),
+			}
+			// conn.SetReadDeadline(time.Now())
+			sendMessage(m)
+			// conn.SetReadDeadline(time.Time{})
+			// go receive()
+		case <- sigHandled:
+			fmt.Println("before break")
+			cleanup()
 			os.Exit(0)
-		default:
-			fmt.Println("ERROR", err)
-			os.Exit(1)
 		}
 	}
 }

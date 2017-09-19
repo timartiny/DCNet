@@ -15,6 +15,8 @@ var port = "0.0.0.0:9001"
 
 var connections []net.Conn
 
+// echo receives messages, and sends them to all connected clients.
+// currently does no clean up on connections.
 func echo(conn net.Conn) {
 	// r := bufio.NewReader(conn)
 	for {
@@ -40,6 +42,7 @@ func echo(conn net.Conn) {
 	}
 }
 
+// starts server.
 func main() {
 	l, err := net.Listen("tcp", port)
 	if err != nil {

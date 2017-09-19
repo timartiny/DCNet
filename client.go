@@ -34,13 +34,13 @@ func receive(){
 		n, err := conn.Read(data)
 		switch err {
 		case nil:
-			fmt.Printf("Received %d bytes\n", n)
 		case io.EOF:
 			os.Exit(0)
 		default:
 			fmt.Println("ERROR", err)
 			os.Exit(2)
 		}
+
 		protoData := new(message.Message)
 		err = proto.Unmarshal(data[0:n], protoData)
 		if err != nil{
@@ -88,7 +88,7 @@ func parseKey(data []byte) bool{
 	// have the shared key.
 	if bytes.Equal(data, curve.Marshal(pubKey)){
 		//this is our key
-		fmt.Println("this is my Key")
+		// fmt.Println("this is my Key")
 		return false
 	}
 
@@ -102,10 +102,10 @@ func parseKey(data []byte) bool{
 	_, ok := sharedKeys[string(data)]
 	if ok{ 
 		// already have this key
-		fmt.Println("i have this key")
+		// fmt.Println("i have this key")
 		return false
 	}
-	fmt.Println("don't have key")
+	// fmt.Println("don't have key")
 	
 	// don't have this key
 	if sharedKeys == nil{
@@ -120,12 +120,13 @@ func parseKey(data []byte) bool{
 
 	sharedKeys[string(data)] = newSharedKey
 
-	fmt.Println("added new key!")
+	// fmt.Println("added new key!")
 	return true;
 }
 
 // genKeys generates keys based on curve ed25519, fills in global values.
 func genKeys() {
+	curve = ecdh.NewCurve25519ECDH() 
 	privKey, pubKey, _  = curve.GenerateKey(rand.Reader)
 }
 
@@ -137,11 +138,11 @@ func sendMessage(m *message.Message){
 		log.Fatal("marshaling error: ", err)
 	}
 
-	n, err := conn.Write(data)
+	_, err = conn.Write(data)
 	if err != nil{
 		log.Fatal("sending error: ", err)
 	}
-	fmt.Printf("Sent %d bytes\n", n)
+	// fmt.Printf("Sent %d bytes\n", n)
 }
 
 func cleanup(){
@@ -155,14 +156,20 @@ func cleanup(){
 // main client method, establishes connection to server, allows user to type
 // messages to be sent.
 func main() {
+	// set up the connection
 	var err error
 	conn, err = net.Dial("tcp", port)
 	if err != nil {
 		fmt.Println("ERROR", err)
 		os.Exit(1)
 	}
+	// start receiving messages
 	go receive()
 
+	// we have two types of input, a typed message and also a ctrl+c signal
+	// we create a channel for the signal first, if a user types ctrl+c it will
+	// cause the anonymous function to call cleanup() and inform the main loop 
+	// that it should exit
 	sigChan := make(chan os.Signal, 1)
 	sigHandled := make(chan bool)
 	signal.Notify(sigChan, os.Interrupt)
@@ -172,17 +179,24 @@ func main() {
 		sigHandled <- true
 	}()
 
-	curve = ecdh.NewCurve25519ECDH() 
+	// set up our keys
 	genKeys()
+
+	// send our keys to the server to broadcast to all users
 	m := &message.Message{
 		Data: curve.Marshal(pubKey),
 		Type: proto.Int32(0),
 	}
 	sendMessage(m)
 
+	// we now make a channel for our user input, since we have to listen for
+	// two types of input we need two channels each running concurrently.
+	// once the input has been gathered it will fill channel with input or 
+	// handle error.
 	inpChan := make(chan []byte)
 	go func(inpChan chan []byte){
 		for {
+			fmt.Print("Message: ")
 			userInput := bufio.NewReader(os.Stdin)
 			userLine, err := userInput.ReadBytes(byte('\n'))
 				switch err {
@@ -197,21 +211,18 @@ func main() {
 		}
 	}(inpChan)
 
+	// main loop, waits for channels to be filled, if input is filled it will 
+	// send the message, if the signal channel is filled it will handle cleanup
+	// and then exit
 	for {
-		// fmt.Print("Message: ")
 		select{
 		case inp :=<- inpChan:
-			fmt.Println("about to send")
 			m = &message.Message{
 				Data: inp,
 				Type: proto.Int32(1),
 			}
-			// conn.SetReadDeadline(time.Now())
 			sendMessage(m)
-			// conn.SetReadDeadline(time.Time{})
-			// go receive()
 		case <- sigHandled:
-			fmt.Println("before break")
 			cleanup()
 			os.Exit(0)
 		}

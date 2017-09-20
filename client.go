@@ -95,9 +95,10 @@ func parseMessage(msg *message.Message){
 	}else if *msg.Type == 1{
 		//received a new message
 		fmt.Printf("Received: %s\n", msg.Data)
-	}else if *msg.Type == 3{
+	}else if *msg.Type == 4{
 		//received a disconnect message
 		// delete(sharedKeys, string(msg.Data))
+		fmt.Println("deleting stuff")
 		delete(sharedPrngs, string(msg.Data))
 	}
 }
@@ -178,14 +179,14 @@ func sendMessage(m *message.Message){
 func cleanup(){
 	m:= &message.Message{
 		Data: curve.Marshal(pubKey),
-		Type: proto.Int32(3),
+		Type: proto.Int32(4),
 	}
 	sendMessage(m)
 }
 
 // getInput handles the collection of input from user, once they have typed
 // a message it is passed back to make routine via channel.
-func getInput(inpChan chan []bytes){
+func getInput(inpChan chan []byte){
 	for {
 		fmt.Print("Message: ")
 		userInput := bufio.NewReader(os.Stdin)
@@ -257,6 +258,7 @@ func main() {
 			}
 			sendMessage(m)
 		case <- sigHandled:
+			cleanup()
 			os.Exit(0)
 		}
 	}

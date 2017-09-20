@@ -47,7 +47,7 @@ func echo(conn net.Conn) {
 		}
 		protoData := new(message.Message)
 		err = proto.Unmarshal(data[0:n], protoData)
-		if *protoData.Type == 3{
+		if *protoData.Type == 4{
 			exit(conn)
 			loop = false
 		}

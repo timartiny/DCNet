@@ -23,7 +23,7 @@ var port = "0.0.0.0:9001"
 var pubKey crypto.PublicKey
 var privKey crypto.PrivateKey
 var curve ecdh.ECDH
-var sharedKeys map[string][]byte
+// var sharedKeys map[string][]byte
 var sharedPrngs map[string]*prng.Prng
 var conn net.Conn
 
@@ -97,7 +97,7 @@ func parseMessage(msg *message.Message){
 		fmt.Printf("Received: %s\n", msg.Data)
 	}else if *msg.Type == 3{
 		//received a disconnect message
-		delete(sharedKeys, string(msg.Data))
+		// delete(sharedKeys, string(msg.Data))
 		delete(sharedPrngs, string(msg.Data))
 	}
 }
@@ -121,7 +121,7 @@ func parseKey(data []byte) bool{
 		return false
 	}
 
-	_, ok := sharedKeys[string(data)]
+	_, ok := sharedPrngs[string(data)]
 	if ok{
 		// already have this key
 		// fmt.Println("i have this key")
@@ -130,8 +130,8 @@ func parseKey(data []byte) bool{
 	// fmt.Println("don't have key")
 
 	// don't have any keys
-	if sharedKeys == nil{
-		sharedKeys = make(map[string][]byte)
+	if sharedPrngs == nil{
+		// sharedKeys = make(map[string][]byte)
         sharedPrngs = make(map[string]*prng.Prng)
 	}
 
@@ -146,7 +146,7 @@ func parseKey(data []byte) bool{
     p := prng.Prng{}
     p.Setup(newSharedKey)
 
-	sharedKeys[string(data)] = newSharedKey
+	// sharedKeys[string(data)] = newSharedKey
     sharedPrngs[string(data)] = &p
 
 	// fmt.Println("added new key!")
@@ -174,12 +174,32 @@ func sendMessage(m *message.Message){
 	// fmt.Printf("Sent %d bytes\n", n)
 }
 
+// cleanup sends a message to the server telling it the client is disconnecting
 func cleanup(){
 	m:= &message.Message{
 		Data: curve.Marshal(pubKey),
 		Type: proto.Int32(3),
 	}
 	sendMessage(m)
+}
+
+// getInput handles the collection of input from user, once they have typed
+// a message it is passed back to make routine via channel.
+func getInput(inpChan chan []bytes){
+	for {
+		fmt.Print("Message: ")
+		userInput := bufio.NewReader(os.Stdin)
+		userLine, err := userInput.ReadBytes(byte('\n'))
+		switch err {
+		case nil:
+			inpChan <- userLine
+		case io.EOF:
+			os.Exit(0)
+		default:
+			fmt.Println("ERROR", err)
+			os.Exit(1)
+		}
+	}
 }
 
 // main client method, establishes connection to server, allows user to type
@@ -223,22 +243,7 @@ func main() {
 	// once the input has been gathered it will fill channel with input or 
 	// handle error.
 	inpChan := make(chan []byte)
-	go func(inpChan chan []byte){
-		for {
-			fmt.Print("Message: ")
-			userInput := bufio.NewReader(os.Stdin)
-			userLine, err := userInput.ReadBytes(byte('\n'))
-				switch err {
-				case nil:
-					inpChan <- userLine
-				case io.EOF:
-					os.Exit(0)
-				default:
-					fmt.Println("ERROR", err)
-					os.Exit(1)
-				}
-		}
-	}(inpChan)
+	go getInput(inpChan)
 
 	// main loop, waits for channels to be filled, if input is filled it will 
 	// send the message, if the signal channel is filled it will handle cleanup

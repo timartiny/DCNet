@@ -257,7 +257,6 @@ func main() {
 			}
 			sendMessage(m)
 		case <- sigHandled:
-			cleanup()
 			os.Exit(0)
 		}
 	}

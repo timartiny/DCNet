@@ -105,7 +105,7 @@ func parseMessage(msg *message.Message){
 		fmt.Printf("\n\nReceived: [% x]\n", msg.Data)
 
         _, psm := pendingSentMessages[string(msg.Nonce)]
-        _, prm := pendingReceivedMessages[string(msg.Nonce)]
+        known, prm := pendingReceivedMessages[string(msg.Nonce)]
 
         if  psm {
             // Message sent by me
@@ -114,7 +114,16 @@ func parseMessage(msg *message.Message){
         } else if prm {
             // We have seen this nonce but haven't received all parts yet 
             // TODO Maintain count somehow 
-            fmt.Printf("I have seen this but didn't send it - [% x]\n", msg.Data)
+            knownXOR := make([]byte, len(msg.Data))
+
+            // Take the XOR of the messae with the known bytes
+            for i := 0; i < len(msg.Data); i++ {
+                knownXOR[i] = known[i] ^ msg.Data[i]
+            }
+
+            // Store the bytes
+            pendingReceivedMessages[string(msg.Nonce)] = knownXOR
+            fmt.Printf("I have seen this but didn't send it - [% x]\n%s\n", knownXOR, string(knownXOR))
         } else {
             // We have never seen this nonce - send our response and store
             fmt.Printf("I have NOT seen this and didn't send it - [% x]\n", msg.Data)
@@ -125,7 +134,7 @@ func parseMessage(msg *message.Message){
             }
 
             // Store the received message to be looked up by its nonce
-            pendingReceivedMessages[string(msg.Nonce)], err = prepMessage(msg.Data, sharedKeys, msg.Nonce)
+            pendingReceivedMessages[string(msg.Nonce)] = msg.Data
             if err != nil {
                 fmt.Println(err)
             }
@@ -352,14 +361,6 @@ func main() {
 		select{
 		case inp :=<-inpChan:
             sendMessage(string(inp))
-            // nonce := make([]byte, 16)
-            // rand.Read(nonce)
-			// m = &message.Message{
-			// 	Data: inp,
-			// 	Type: proto.Int32(1),
-            //     Nonce: nonce,
-			// }
-			// send(m)
 		case <- sigHandled:
 			cleanup()
 			os.Exit(0)

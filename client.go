@@ -24,7 +24,8 @@ var pubKey crypto.PublicKey
 var privKey crypto.PrivateKey
 var curve ecdh.ECDH
 var sharedKeys map[string][]byte
-// var sharedPrngs map[string]*prng.Prng
+var pendingSentMessages map[string]string       // Map nonce to messages I sent but havent heard back yet
+var pendingReceivedMessages map[string][]byte   // Map nonce to incomplete received messages
 var conn net.Conn
 
 // receive handles the receiving of messages.
@@ -65,7 +66,7 @@ func prepMessage(msg []byte, connKeyss map[string][]byte, nonce []byte) ([]byte,
     result := []byte(msg)
     for _, v := range connKeyss {
 
-        // get the random bytes for each shared Prng
+        // get the random bytes for each connection 
         hold, err := prng.GetBytes(v, len(msg), nonce)
 
         if err != nil {
@@ -101,11 +102,41 @@ func parseMessage(msg *message.Message){
 		}
 	}else if *msg.Type == 1{
 		//received a new message
+		fmt.Printf("\n\nReceived: [% x]\n", msg.Data)
+
+        _, psm := pendingSentMessages[string(msg.Nonce)]
+        _, prm := pendingReceivedMessages[string(msg.Nonce)]
+
+        if  psm {
+            // Message sent by me
+            // TODO Maintain count somehow
+            fmt.Printf("I sent this message - [% x]\n", msg.Data)
+        } else if prm {
+            // We have seen this nonce but haven't received all parts yet 
+            // TODO Maintain count somehow 
+            fmt.Printf("I have seen this but didn't send it - [% x]\n", msg.Data)
+        } else {
+            // We have never seen this nonce - send our response and store
+            fmt.Printf("I have NOT seen this and didn't send it - [% x]\n", msg.Data)
+            err := sendResponse(len(msg.Data), msg.Nonce)
+
+            if pendingReceivedMessages == nil{
+                pendingReceivedMessages = make(map[string][]byte)
+            }
+
+            // Store the received message to be looked up by its nonce
+            pendingReceivedMessages[string(msg.Nonce)], err = prepMessage(msg.Data, sharedKeys, msg.Nonce)
+            if err != nil {
+                fmt.Println(err)
+            }
+        }
+    }else if *msg.Type == 2{
+        //received a new Error From the server
 		fmt.Printf("Received: %s\n", msg.Data)
 	}else if *msg.Type == 4{
 		//received a disconnect message
 		// delete(sharedKeys, string(msg.Data))
-		fmt.Println("deleting stuff")
+		fmt.Println("\ndeleting stuff")
 		delete(sharedKeys, string(msg.Data))
 	}
 }
@@ -114,7 +145,7 @@ func parseMessage(msg *message.Message){
 // it will add it to our global map, and generate a shared secret. 
 // Returns whether the key is new.
 func parseKey(data []byte) bool{
-	//received a key, check if it is ours, if it is not, check if we already
+	//received a key,  check if it is ours, if it is not, check if we already
 	// have the shared key.
 	if bytes.Equal(data, curve.Marshal(pubKey)){
 		//this is our key
@@ -140,7 +171,6 @@ func parseKey(data []byte) bool{
 	// don't have any keys
 	if sharedKeys == nil{
 		sharedKeys = make(map[string][]byte)
-        // sharedPrngs = make(map[string]*prng.Prng)
 	}
 
     // don't have this key
@@ -150,21 +180,81 @@ func parseKey(data []byte) bool{
 		return false
 	}
 
-    // Create a Prng for the new key 
-    // p := prng.Prng{}
-    // p.Setup(newSharedKey)
-    // sharedPrngs[string(data)] = &p
-
     sharedKeys[string(data)] = newSharedKey
 
 	// fmt.Println("added new key!")
-	return true;
+	return true; 
 }
 
 // genKeys generates keys based on curve ed25519, fills in global values.
 func genKeys() {
 	curve = ecdh.NewCurve25519ECDH() 
 	privKey, pubKey, _  = curve.GenerateKey(rand.Reader)
+}
+
+// sendMessage deals with the sendig of actual messages that the client
+// wants to distribute. 
+func sendMessage( msg string) error {
+    nonce := make([]byte, 16)
+    _, err := rand.Read(nonce)
+
+    // Note that err == nil only if we read len(b) bytes.
+    if err != nil {
+        return err
+    }
+
+    // Prepare the message by XORing with known connections
+    preppedMsg, err := prepMessage([]byte(msg), sharedKeys, nonce)
+    if err != nil {
+        return err
+    }
+
+    m := &message.Message{
+        Data: preppedMsg,
+        Type: proto.Int32(1),
+        Nonce: nonce,
+    }
+
+    // add to the pending messages dictionary
+    if pendingSentMessages == nil {
+        pendingSentMessages = make(map[string]string)
+    }
+
+    // Send the message out to the other clients
+    pendingSentMessages[string(nonce)] = msg
+    send(m)
+
+    return nil
+}
+
+// respondMessage deals with the received messages that a client did NOT 
+// personally send out. This means sending the XOR of all known connections
+func sendResponse( length int, nonce []byte) error {
+    bytes := make([]byte, length)
+
+    for i :=0; i < length; i++ {
+        bytes[i] = 0
+    }
+
+    preppedRsp, err := prepMessage(bytes, sharedKeys, nonce)
+    if err != nil {
+        return err
+    }
+
+    m := &message.Message{
+        Data: preppedRsp,
+        Type: proto.Int32(1),
+        Nonce: nonce,
+    }
+
+
+    // Send the Response out to the other clients
+    send(m)
+
+    // TODO - WAIT and listen for other responses 
+    // TODO - Store response to create XOR and Decode message?  
+
+     return nil
 }
 
 // send handles the sending of messages packets to the server, it will Marshal
@@ -202,9 +292,11 @@ func getInput(inpChan chan []byte){
 		case nil:
 			inpChan <- userLine
 		case io.EOF:
+            cleanup()
 			os.Exit(0)
 		default:
 			fmt.Println("ERROR", err)
+            cleanup()
 			os.Exit(1)
 		}
 	}
@@ -258,12 +350,16 @@ func main() {
 	// and then exit
 	for {
 		select{
-		case inp :=<- inpChan:
-			m = &message.Message{
-				Data: inp,
-				Type: proto.Int32(1),
-			}
-			send(m)
+		case inp :=<-inpChan:
+            sendMessage(string(inp))
+            // nonce := make([]byte, 16)
+            // rand.Read(nonce)
+			// m = &message.Message{
+			// 	Data: inp,
+			// 	Type: proto.Int32(1),
+            //     Nonce: nonce,
+			// }
+			// send(m)
 		case <- sigHandled:
 			cleanup()
 			os.Exit(0)

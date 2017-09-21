@@ -4,4 +4,5 @@ package message;
 message Message{
     required bytes data = 1;
     required int32 type = 2;
+    optional bytes nonce = 3;
 }

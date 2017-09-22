@@ -26,6 +26,7 @@ var curve ecdh.ECDH
 var sharedKeys map[string][]byte
 var pendingSentMessages map[string]string       // Map nonce to messages I sent but havent heard back yet
 var pendingReceivedMessages map[string][]byte   // Map nonce to incomplete received messages
+var count map[string]int // number of received messages with a given nonce
 var conn net.Conn
 
 // receive handles the receiving of messages.
@@ -62,9 +63,9 @@ func receive(){
 // 
 // if preparing a message send []byte(message)
 // If preping a response to a message send []byte{0,0,...0}
-func prepMessage(msg []byte, connKeyss map[string][]byte, nonce []byte) ([]byte, error) {
+func prepMessage(msg []byte, nonce []byte) ([]byte, error) {
     result := []byte(msg)
-    for _, v := range connKeyss {
+    for _, v := range sharedKeys{
 
         // get the random bytes for each connection 
         hold, err := prng.GetBytes(v, len(msg), nonce)
@@ -72,6 +73,7 @@ func prepMessage(msg []byte, connKeyss map[string][]byte, nonce []byte) ([]byte,
         if err != nil {
             return nil, err
         }
+        fmt.Printf("prepMessage: shared key = [% x]\n", hold)
 
         // Take the XOR of the random bytes with the message
         for i :=0; i < len(msg); i++{
@@ -88,58 +90,26 @@ func prepMessage(msg []byte, connKeyss map[string][]byte, nonce []byte) ([]byte,
 func parseMessage(msg *message.Message){
 	if *msg.Type == 0{
 		//received a key
+		fmt.Printf("received key, [% x]\n", msg.Data)
 		newKey := parseKey(msg.Data)
 
 		if newKey{
 			// now your key has to be sent in response
-			// conn.SetReadDeadline(time.Now())
 			m := &message.Message{
 				Data: curve.Marshal(pubKey),
 				Type: proto.Int32(0),
 			}
 			send(m)
-			// conn.SetReadDeadline(time.Time{})
 		}
 	}else if *msg.Type == 1{
 		//received a new message
-		fmt.Printf("\n\nReceived: [% x]\n", msg.Data)
+		fmt.Printf("\n\nType 1: Received: [% x]\n", msg.Data)
 
-        _, psm := pendingSentMessages[string(msg.Nonce)]
-        known, prm := pendingReceivedMessages[string(msg.Nonce)]
-
-        if  psm {
-            // Message sent by me
-            // TODO Maintain count somehow
-            fmt.Printf("I sent this message - [% x]\n", msg.Data)
-        } else if prm {
-            // We have seen this nonce but haven't received all parts yet 
-            // TODO Maintain count somehow 
-            knownXOR := make([]byte, len(msg.Data))
-
-            // Take the XOR of the messae with the known bytes
-            for i := 0; i < len(msg.Data); i++ {
-                knownXOR[i] = known[i] ^ msg.Data[i]
-            }
-
-            // Store the bytes
-            pendingReceivedMessages[string(msg.Nonce)] = knownXOR
-            fmt.Printf("I have seen this but didn't send it - [% x]\n%s\n", knownXOR, string(knownXOR))
-        } else {
-            // We have never seen this nonce - send our response and store
-            fmt.Printf("I have NOT seen this and didn't send it - [% x]\n", msg.Data)
-            err := sendResponse(len(msg.Data), msg.Nonce)
-
-            if pendingReceivedMessages == nil{
-                pendingReceivedMessages = make(map[string][]byte)
-            }
-
-            // Store the received message to be looked up by its nonce
-            pendingReceivedMessages[string(msg.Nonce)] = msg.Data
-            if err != nil {
-                fmt.Println(err)
-            }
-        }
-    }else if *msg.Type == 2{
+		handleNewMessage(msg)
+	}else if *msg.Type ==2{
+		fmt.Printf("\n\nType 2: Received: [% x]\n", msg.Data)
+		handleOldMessage(msg)
+    }else if *msg.Type == 3{
         //received a new Error From the server
 		fmt.Printf("Received: %s\n", msg.Data)
 	}else if *msg.Type == 4{
@@ -148,6 +118,69 @@ func parseMessage(msg *message.Message){
 		fmt.Println("\ndeleting stuff")
 		delete(sharedKeys, string(msg.Data))
 	}
+}
+
+// handleNewMessage will run when a new message (type 1) is received and will
+// send out replies, does not handle other replies.
+func handleNewMessage(msg *message.Message){
+    _, psm := pendingSentMessages[string(msg.Nonce)]
+
+    if  psm {
+        // Message sent by me
+        // TODO Maintain count somehow
+        fmt.Printf("handleNewMessage: I sent this message - [% x]\n", msg.Data)
+        // really doesn't need to do anything at all except display the message, right? it knows what it sent.
+    } else {
+        // We have never seen this nonce - send our response and store
+        fmt.Printf("handleNewMessage: I have NOT seen this and didn't send it - [% x]\n", msg.Data)
+        err := sendResponse(len(msg.Data), msg.Nonce)
+
+        if pendingReceivedMessages == nil{
+            pendingReceivedMessages = make(map[string][]byte)
+        }
+
+        if count == nil{
+        	count = make(map[string]int)
+        }
+
+        // // Store the received message to be looked up by its nonce
+        pendingReceivedMessages[string(msg.Nonce)] = msg.Data 
+        count[string(msg.Nonce)] = 1
+        // if count[string(msg.Nonce)] == len(sharedKeys){
+	        fmt.Printf("handleNewMessage: I have seen this but didn't send it - [% x]\n%s\n", pendingReceivedMessages[string(msg.Nonce)], pendingReceivedMessages[string(msg.Nonce)])
+	    // }
+        if err != nil {
+            fmt.Println(err)
+        }
+    }
+}
+
+func handleOldMessage(msg *message.Message){
+    _, psm := pendingSentMessages[string(msg.Nonce)]
+    known, prm := pendingReceivedMessages[string(msg.Nonce)]
+    if psm{
+    	// my message ignore
+    	fmt.Println("handleOldMessage: receiving more stuff that i started")
+    	return
+    }else if prm {
+        // We have seen this nonce but haven't received all parts yet 
+        count[string(msg.Nonce)] += 1
+        knownXOR := make([]byte, len(msg.Data))
+
+        // Take the XOR of the messae with the known bytes
+        for i := 0; i < len(msg.Data); i++ {
+            knownXOR[i] = known[i] ^ msg.Data[i]
+        }
+
+        // Store the bytes
+        pendingReceivedMessages[string(msg.Nonce)] = knownXOR
+        // if count[string(msg.Nonce)] == len(sharedKeys){
+	        fmt.Printf("handleOldMessage: I have seen this but didn't send it - [% x]\n%s\n", knownXOR, string(knownXOR))
+	    // }
+    }else{
+    	fmt.Printf("Problem, received a response before receiving an initial file")
+    }
+
 }
 
 // parseKey will parse given data to see if it is a key we already have, if not
@@ -172,10 +205,10 @@ func parseKey(data []byte) bool{
 	_, ok := sharedKeys[string(data)]
 	if ok{
 		// already have this key
-		// fmt.Println("i have this key")
+		fmt.Println("i have this key")
 		return false
 	}
-	// fmt.Println("don't have key")
+	fmt.Println("don't have key")
 
 	// don't have any keys
 	if sharedKeys == nil{
@@ -213,7 +246,7 @@ func sendMessage( msg string) error {
     }
 
     // Prepare the message by XORing with known connections
-    preppedMsg, err := prepMessage([]byte(msg), sharedKeys, nonce)
+    preppedMsg, err := prepMessage([]byte(msg), nonce)
     if err != nil {
         return err
     }
@@ -238,21 +271,21 @@ func sendMessage( msg string) error {
 
 // respondMessage deals with the received messages that a client did NOT 
 // personally send out. This means sending the XOR of all known connections
-func sendResponse( length int, nonce []byte) error {
+func sendResponse( length int, nonce []byte) error{
     bytes := make([]byte, length)
 
     for i :=0; i < length; i++ {
         bytes[i] = 0
     }
 
-    preppedRsp, err := prepMessage(bytes, sharedKeys, nonce)
+    preppedRsp, err := prepMessage(bytes, nonce)
     if err != nil {
         return err
     }
 
     m := &message.Message{
         Data: preppedRsp,
-        Type: proto.Int32(1),
+        Type: proto.Int32(2),
         Nonce: nonce,
     }
 
@@ -261,7 +294,6 @@ func sendResponse( length int, nonce []byte) error {
     send(m)
 
     // TODO - WAIT and listen for other responses 
-    // TODO - Store response to create XOR and Decode message?  
 
      return nil
 }
@@ -278,6 +310,7 @@ func send(m *message.Message){
 	if err != nil{
 		log.Fatal("sending error: ", err)
 	}
+	fmt.Printf("sent [% x]\n", m.Data)
 	// fmt.Printf("Sent %d bytes\n", n)
 }
 

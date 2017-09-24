@@ -51,13 +51,15 @@ func echo(conn net.Conn) {
 			exit(conn)
 			loop = false
 		}
-		fmt.Printf("Received Message [% x], sending back\n", protoData.Data)
+		fmt.Printf("Received Message [% x], sending back\n", protoData.Data[:3])
 		for _,v := range connections{
 			_, err := v.Write(data[0:n])
+            fmt.Printf(" [%s]\n", v.RemoteAddr())
 			if err != nil{
 				fmt.Println("err sending data, err=",err)
 			}
 		}
+        fmt.Print("\n")
 	}
 }
 

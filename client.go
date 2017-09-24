@@ -11,6 +11,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+    "sync/atomic"
+    "github.com/golang/sync/syncmap"
 	// "time"
 
 	"github.com/golang/protobuf/proto"
@@ -23,16 +25,16 @@ var port = "0.0.0.0:9001"
 var pubKey crypto.PublicKey
 var privKey crypto.PrivateKey
 var curve ecdh.ECDH
-var sharedKeys map[string][]byte
-var pendingSentMessages map[string]string       // Map nonce to messages I sent but havent heard back yet
-var pendingReceivedMessages map[string][]byte   // Map nonce to incomplete received messages
-var count map[string]int // number of received messages with a given nonce
+var sharedKeys *syncmap.Map                         //[string][]byte
+var pendingSentMessages *syncmap.Map // [string]string       // Map nonce to messages I sent but havent heard back yet
+var pendingReceivedMessages *syncmap.Map  // [string][]byte   // Map nonce to incomplete received messages
+var count *syncmap.Map  // [string]int                        // number of received messages with a given nonce
+var numConns uint32
 var conn net.Conn
 
 // receive handles the receiving of messages.
 // it puts the received data into a protobuf and passes it to a parsing function.
 func receive(){
-	// response := bufio.NewReader(conn)
 	for {
 		data := make([]byte, 4096)
 		n, err := conn.Read(data)
@@ -50,7 +52,7 @@ func receive(){
 		if err != nil{
 			log.Fatal("error unmarshalling: ", err)
 		}
-		// fmt.Println("Received:", protoData.String())
+		// fmt.Printf("\n[Receive] - [% x]\n", protoData.Data[:2])
 
 		// now we need to parse received message
 		go parseMessage(protoData)
@@ -65,21 +67,24 @@ func receive(){
 // If preping a response to a message send []byte{0,0,...0}
 func prepMessage(msg []byte, nonce []byte) ([]byte, error) {
     result := []byte(msg)
-    for _, v := range sharedKeys{
-
+    sharedKeys.Range(func(pk, v interface{}) bool {
         // get the random bytes for each connection 
-        hold, err := prng.GetBytes(v, len(msg), nonce)
+        hold, err := prng.GetBytes(v.([]byte), len(msg), nonce)
 
         if err != nil {
-            return nil, err
+            return false
         }
-        fmt.Printf("prepMessage: shared key = [% x]\n", hold)
+
+        // Print the first two bytes of the key and the first 3 of random for debugging
+        fmt.Printf("[prepMessage] [% x] => [% x]\n", []byte(pk.(string))[:2], hold[:3])
 
         // Take the XOR of the random bytes with the message
         for i :=0; i < len(msg); i++{
             result[i] = result[i] ^ hold[i]
         }
-    }
+
+        return true
+    })
 
     return result, nil
 }
@@ -90,7 +95,7 @@ func prepMessage(msg []byte, nonce []byte) ([]byte, error) {
 func parseMessage(msg *message.Message){
 	if *msg.Type == 0{
 		//received a key
-		fmt.Printf("received key, [% x]\n", msg.Data)
+		fmt.Printf("[parseMessage] received key, [% x]\n", msg.Data[:2])
 		newKey := parseKey(msg.Data)
 
 		if newKey{
@@ -103,85 +108,94 @@ func parseMessage(msg *message.Message){
 		}
 	}else if *msg.Type == 1{
 		//received a new message
-		fmt.Printf("\n\nType 1: Received: [% x]\n", msg.Data)
+		fmt.Printf("[parseMessage] Type 1: Received: [% x]\n", msg.Data)
+		handleMessage(msg)
 
-		handleNewMessage(msg)
 	}else if *msg.Type ==2{
-		fmt.Printf("\n\nType 2: Received: [% x]\n", msg.Data)
-		handleOldMessage(msg)
+        // Received Old format message
+		fmt.Printf("[parseMessage] Type 2: Received: [% x]\n", msg.Data)
+		handleMessage(msg)
+
     }else if *msg.Type == 3{
         //received a new Error From the server
-		fmt.Printf("Received: %s\n", msg.Data)
+		fmt.Printf("[parseMessage] Type 3 Received Nonce Error: %s\n", msg.Data)
+
 	}else if *msg.Type == 4{
-		//received a disconnect message
-		// delete(sharedKeys, string(msg.Data))
-		fmt.Println("\ndeleting stuff")
-		delete(sharedKeys, string(msg.Data))
+		// received a disconnect message
+		fmt.Println("[parseMessage] deleting stuff")
+		sharedKeys.Delete(string(msg.Data))
+
+        // decrement number of connections (see sync/atomic.AddUint32 docs)
+        atomic.AddUint32(&numConns, ^uint32(0))
 	}
 }
 
-// handleNewMessage will run when a new message (type 1) is received and will
+// handleMessage will run when a new message (type 1) is received and will
 // send out replies, does not handle other replies.
-func handleNewMessage(msg *message.Message){
-    _, psm := pendingSentMessages[string(msg.Nonce)]
+func handleMessage(msg *message.Message){
+
+    if pendingReceivedMessages == nil{
+        pendingReceivedMessages = new(syncmap.Map) //, string, []byte
+    }
+
+    if pendingSentMessages == nil{
+        pendingSentMessages = new(syncmap.Map) //, string, []byte
+    }
+
+    if count == nil{
+        count = new(syncmap.Map)  // string. int
+    }
+
+    _, psm := pendingSentMessages.Load(string(msg.Nonce))
+    known, prm := pendingReceivedMessages.Load(string(msg.Nonce))
 
     if  psm {
         // Message sent by me
-        // TODO Maintain count somehow
-        fmt.Printf("handleNewMessage: I sent this message - [% x]\n", msg.Data)
-        // really doesn't need to do anything at all except display the message, right? it knows what it sent.
-    } else {
+        // really doesn't need to do anything at all except display the message, it knows what it sent.
+        numReceived, _ := count.Load(string(msg.Nonce))
+		count.Store(string(msg.Nonce), numReceived.(uint32)+1 )
+        fmt.Printf("[handleMessage] I sent this message - %d\n", numReceived.(uint32)+1 )
+    } else if !prm {
         // We have never seen this nonce - send our response and store
-        fmt.Printf("handleNewMessage: I have NOT seen this and didn't send it - [% x]\n", msg.Data)
+        fmt.Printf("[handleMessage] I have NOT seen this and didn't send it - 1/%d\n", numConns)
         err := sendResponse(len(msg.Data), msg.Nonce)
 
-        if pendingReceivedMessages == nil{
-            pendingReceivedMessages = make(map[string][]byte)
+        // Store the received message to be looked up by its nonce
+        pendingReceivedMessages.Store(string(msg.Nonce), msg.Data)
+        count.Store(string(msg.Nonce), uint32(1))
+
+        numReceived, _ := count.Load(string(msg.Nonce))
+        if numReceived.(uint32) == numConns-1 {
+            message, _ := pendingReceivedMessages.Load(string(msg.Nonce))
+            fmt.Printf("[handleMessage] FINAL  === %s", message )
         }
 
-        if count == nil{
-        	count = make(map[string]int)
-        }
 
-        // // Store the received message to be looked up by its nonce
-        pendingReceivedMessages[string(msg.Nonce)] = msg.Data 
-        count[string(msg.Nonce)] = 1
-        // if count[string(msg.Nonce)] == len(sharedKeys){
-	        fmt.Printf("handleNewMessage: I have seen this but didn't send it - [% x]\n%s\n", pendingReceivedMessages[string(msg.Nonce)], pendingReceivedMessages[string(msg.Nonce)])
-	    // }
         if err != nil {
             fmt.Println(err)
         }
-    }
-}
-
-func handleOldMessage(msg *message.Message){
-    _, psm := pendingSentMessages[string(msg.Nonce)]
-    known, prm := pendingReceivedMessages[string(msg.Nonce)]
-    if psm{
-    	// my message ignore
-    	fmt.Println("handleOldMessage: receiving more stuff that i started")
-    	return
-    }else if prm {
+    } else {
         // We have seen this nonce but haven't received all parts yet 
-        count[string(msg.Nonce)] += 1
+        numReceived, _ :=  count.Load(string(msg.Nonce))
+        count.Store(string(msg.Nonce), numReceived.(uint32)+1)
         knownXOR := make([]byte, len(msg.Data))
 
         // Take the XOR of the messae with the known bytes
         for i := 0; i < len(msg.Data); i++ {
-            knownXOR[i] = known[i] ^ msg.Data[i]
+            knownXOR[i] = known.([]byte)[i] ^ msg.Data[i]
         }
 
         // Store the bytes
-        pendingReceivedMessages[string(msg.Nonce)] = knownXOR
-        // if count[string(msg.Nonce)] == len(sharedKeys){
-	        fmt.Printf("handleOldMessage: I have seen this but didn't send it - [% x]\n%s\n", knownXOR, string(knownXOR))
-	    // }
-    }else{
-    	fmt.Printf("Problem, received a response before receiving an initial file")
+        if numReceived.(uint32) == numConns-1 {
+            message, _ := pendingReceivedMessages.Load(string(msg.Nonce))
+            fmt.Printf("[handleMessage] FINAL MESSAGE === %s\n\n\n", message)
+        } else {
+            fmt.Printf("[handleMessage] I have seen this but didn't send it - %d/%d\n", numReceived.(uint32)+1, numConns)
+            pendingReceivedMessages.Store(string(msg.Nonce), knownXOR)
+        }
     }
-
 }
+
 
 // parseKey will parse given data to see if it is a key we already have, if not
 // it will add it to our global map, and generate a shared secret. 
@@ -191,7 +205,7 @@ func parseKey(data []byte) bool{
 	// have the shared key.
 	if bytes.Equal(data, curve.Marshal(pubKey)){
 		//this is our key
-		// fmt.Println("this is my Key")
+		fmt.Println("[parseKey] this is my Key")
 		return false
 	}
 
@@ -202,18 +216,19 @@ func parseKey(data []byte) bool{
 		return false
 	}
 
-	_, ok := sharedKeys[string(data)]
-	if ok{
-		// already have this key
-		fmt.Println("i have this key")
-		return false
-	}
-	fmt.Println("don't have key")
-
 	// don't have any keys
 	if sharedKeys == nil{
-		sharedKeys = make(map[string][]byte)
+		sharedKeys = new(syncmap.Map ) // string, []byte
 	}
+
+	_, ok := sharedKeys.Load(string(data))
+	if ok{
+		// already have this key
+		fmt.Println("[parseKey] i have this key")
+		return false
+	}
+	fmt.Println("[parseKey] i don't have this key")
+
 
     // don't have this key
 	newSharedKey, err := curve.GenerateSharedSecret(privKey, otherKey)
@@ -222,10 +237,11 @@ func parseKey(data []byte) bool{
 		return false
 	}
 
-    sharedKeys[string(data)] = newSharedKey
+    sharedKeys.Store(string(data), newSharedKey)
 
+    atomic.AddUint32(&numConns, 1)
 	// fmt.Println("added new key!")
-	return true; 
+	return true;
 }
 
 // genKeys generates keys based on curve ed25519, fills in global values.
@@ -259,11 +275,16 @@ func sendMessage( msg string) error {
 
     // add to the pending messages dictionary
     if pendingSentMessages == nil {
-        pendingSentMessages = make(map[string]string)
+        pendingSentMessages = new(syncmap.Map)   // string, string
     }
 
+	if count == nil {
+		count = new(syncmap.Map) //  string, int
+	}
+
     // Send the message out to the other clients
-    pendingSentMessages[string(nonce)] = msg
+    pendingSentMessages.Store(string(nonce), msg)
+	count.Store(string(nonce), uint32(1))
     send(m)
 
     return nil
@@ -285,7 +306,7 @@ func sendResponse( length int, nonce []byte) error{
 
     m := &message.Message{
         Data: preppedRsp,
-        Type: proto.Int32(2),
+        Type: proto.Int32(1),
         Nonce: nonce,
     }
 
@@ -293,9 +314,7 @@ func sendResponse( length int, nonce []byte) error{
     // Send the Response out to the other clients
     send(m)
 
-    // TODO - WAIT and listen for other responses 
-
-     return nil
+    return nil
 }
 
 // send handles the sending of messages packets to the server, it will Marshal
@@ -310,7 +329,7 @@ func send(m *message.Message){
 	if err != nil{
 		log.Fatal("sending error: ", err)
 	}
-	fmt.Printf("sent [% x]\n", m.Data)
+	fmt.Printf("\n[send] sent [% x]\n", m.Data[:2])
 	// fmt.Printf("Sent %d bytes\n", n)
 }
 
@@ -349,11 +368,21 @@ func getInput(inpChan chan []byte){
 func main() {
 	// set up the connection
 	var err error
-	conn, err = net.Dial("tcp", port)
-	if err != nil {
-		fmt.Println("ERROR", err)
-		os.Exit(1)
+
+    numConns = 1
+
+    tcpAddr, err := net.ResolveTCPAddr("tcp", port)
+    if err != nil {
+        println("ResolveTCPAddr failed:", err.Error())
+        os.Exit(1)
+    }
+
+    conn, err = net.DialTCP("tcp", nil, tcpAddr)
+    if err != nil {
+        println("Dial failed:", err.Error())
+        os.Exit(1)
 	}
+
 	// start receiving messages
 	go receive()
 

@@ -27,7 +27,6 @@ func exit(conn net.Conn){
 }
 
 // echo receives messages, and sends them to all connected clients.
-// currently does no clean up on connections.
 func echo(conn net.Conn) {
 	// r := bufio.NewReader(conn)
 	loop := true
@@ -47,14 +46,17 @@ func echo(conn net.Conn) {
 		}
 		protoData := new(message.Message)
 		err = proto.Unmarshal(data[0:n], protoData)
+		if err != nil {
+			fmt.Println("err unmarshalling proto, err=",err)
+		}
 		if *protoData.Type == 4{
 			exit(conn)
 			loop = false
 		}
 		fmt.Printf("Received Message [% x], sending back\n", protoData.Data[:3])
 		for _,v := range connections{
-			_, err := v.Write(data[0:n])
-            fmt.Printf(" [%s]\n", v.RemoteAddr())
+			n, err := v.Write(data[0:n])
+            fmt.Printf(" %d bytes: [%s]\n", n, v.RemoteAddr())
 			if err != nil{
 				fmt.Println("err sending data, err=",err)
 			}
@@ -77,7 +79,7 @@ func main() {
 			fmt.Println("ERROR", err)
 			continue
 		}
-		fmt.Println("Connection Received")
+		fmt.Println("Connectfion Received")
 		connections = append(connections, conn)
 		go echo(conn)
 	}

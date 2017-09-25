@@ -40,22 +40,42 @@ func receive(){
 		n, err := conn.Read(data)
 		switch err {
 		case nil:
+			fmt.Printf("in nil, received %d bytes\n", n)
 		case io.EOF:
+			fmt.Printf("in EOF, received %d bytes\n", n)
 			os.Exit(0)
 		default:
 			fmt.Println("ERROR", err)
 			os.Exit(2)
 		}
+		fmt.Printf("Received %d bytes\n", n)
 
-		protoData := new(message.Message)
-		err = proto.Unmarshal(data[0:n], protoData)
-		if err != nil{
-			log.Fatal("error unmarshalling: ", err)
+		for i:= 0; i<n ;{
+			protoData := new(message.Message)
+			err = proto.Unmarshal(data[i:n], protoData)
+			if err != nil{
+				log.Fatal("error unmarshalling: ", err)
+			}
+			fmt.Printf("len of protoData = %d\n", len(protoData.Data))
+			if len(protoData.Data) != n{
+				//TODO: broken except for keys
+				t, _ := proto.Marshal(protoData)
+				fmt.Printf("len of proto = %d\n", len(t))
+				i += len(t)
+				// if *protoData.Type == 1{
+				// 	i+= 2
+				// 	//working theory
+				// 	i+= len(protoData.Data)/128
+				// 	fmt.Printf("adding: %d\n",len(protoData.Data) + 4 + len(protoData.Nonce) + 2 + len(protoData.Data)/128)
+				// }else{
+				// 	fmt.Printf("adding: %d\n",len(protoData.Data) + 4 + len(protoData.Nonce))
+				// }
+			}
+			// fmt.Printf("\n[Receive] - [% x]\n", protoData.Data[:2])
+
+			// now we need to parse received message
+			go parseMessage(protoData)
 		}
-		// fmt.Printf("\n[Receive] - [% x]\n", protoData.Data[:2])
-
-		// now we need to parse received message
-		go parseMessage(protoData)
 	}
 }
 
@@ -76,7 +96,7 @@ func prepMessage(msg []byte, nonce []byte) ([]byte, error) {
         }
 
         // Print the first two bytes of the key and the first 3 of random for debugging
-        fmt.Printf("[prepMessage] [% x] => [% x]\n", []byte(pk.(string))[:2], hold[:3])
+        // fmt.Printf("[prepMessage] [% x] => [% x]\n", []byte(pk.(string))[:2], hold[:3])
 
         // Take the XOR of the random bytes with the message
         for i :=0; i < len(msg); i++{
@@ -240,6 +260,12 @@ func parseKey(data []byte) bool{
     sharedKeys.Store(string(data), newSharedKey)
 
     atomic.AddUint32(&numConns, 1)
+	    sharedKeys.Range(func(pk, _ interface{}) bool {
+
+			fmt.Printf("[parseKey] my keys, [% x]\n", []byte(pk.(string))[:2])
+
+	        return true
+	    })
 	// fmt.Println("added new key!")
 	return true;
 }

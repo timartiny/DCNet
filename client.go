@@ -44,7 +44,7 @@ func receive(){
 		n, err := conn.Read(data)
 		switch err {
 		case nil:
-			fmt.Printf("[receive] %d [% x]\n",n, data[2:4])
+			// fmt.Printf("[receive] %d [% x]\n",n, data[2:4])
 		case io.EOF:
 			// fmt.Printf("in EOF, received %d bytes\n", n)
 			os.Exit(0)
@@ -52,7 +52,6 @@ func receive(){
 			fmt.Println("ERROR", err)
 			os.Exit(2)
 		}
-		// fmt.Printf("Received %d bytes\n", n)
 
 		// here we loop to determine how many messages we received.
         parseData(data, n)
@@ -74,7 +73,7 @@ func parseData(data []byte, n int){
 		}
 
 		t, err := proto.Marshal(protoData)
-        fmt.Printf("[parseData] i:%d - len:%d packet [% x] \n",i, len(t), t[2:4])
+        // fmt.Printf("[parseData] i:%d - len:%d packet [% x] \n",i, len(t), t[2:4])
         if err != nil {
             fmt.Println(err)
         }
@@ -134,21 +133,21 @@ func parseMessage(msg *message.Message){
 		}
 	}else if *msg.Type == 1{
 		//received a new message
-		fmt.Printf("[parseMessage] Type 1: [% x]\n", msg.Data)
+		// fmt.Printf("[parseMessage] Type 1: [% x]\n", msg.Data)
 		handleMessage(msg)
 
 	}else if *msg.Type ==2{
         // Received Old format message
-		fmt.Printf("[parseMessage] Type 2: Received: [% x]\n", msg.Data)
+		// fmt.Printf("[parseMessage] Type 2: Received: [% x]\n", msg.Data)
 		handleMessage(msg)
 
     }else if *msg.Type == 3{
         //received a new Error From the server
-		fmt.Printf("[parseMessage] Type 3 Received Nonce Error: %s\n", msg.Data)
+		// fmt.Printf("[parseMessage] Type 3 Received Nonce Error: %s\n", msg.Data)
 
 	}else if *msg.Type == 4{
 		// received a disconnect message
-		fmt.Println("[parseMessage] deleting stuff")
+		// fmt.Println("[parseMessage] deleting stuff")
 		sharedKeys.Delete(string(msg.Data))
 
         // decrement number of connections (see sync/atomic.AddUint32 docs)
@@ -174,7 +173,7 @@ func handleMessage(msg *message.Message){
         count = new(syncmap.Map)  // string. int
     }
 
-    mySentMsg, psm := pendingSentMessages.Load(string(msg.Nonce))
+    _, psm := pendingSentMessages.Load(string(msg.Nonce))
     known, prm := pendingReceivedMessages.Load(string(msg.Nonce))
 
     if  psm {
@@ -182,10 +181,10 @@ func handleMessage(msg *message.Message){
         // really doesn't need to do anything at all except display the message, it knows what it sent.
         numReceived, _ := count.Load(string(msg.Nonce))
 		count.Store(string(msg.Nonce), numReceived.(uint32)+1 )
-        fmt.Printf("[handleMessage] I sent this message - %d\n%s\n", numReceived.(uint32)+1, mySentMsg)
+        // fmt.Printf("[handleMessage] I sent this message - %d\n%s\n", numReceived.(uint32)+1, mySentMsg)
     } else if !prm {
         // We have never seen this nonce - send our response and store
-        fmt.Printf("[handleMessage] I have NOT seen this and didn't send it - 1/%d\n", numConns)
+        // fmt.Printf("[handleMessage] I have NOT seen this and didn't send it - 1/%d\n", numConns)
         err := sendResponse(len(msg.Data), msg.Nonce)
 
         // Store the received message to be looked up by its nonce
@@ -195,7 +194,7 @@ func handleMessage(msg *message.Message){
         numReceived, _ := count.Load(string(msg.Nonce))
         if numReceived.(uint32) == numConns-1 {
             message, _ := pendingReceivedMessages.Load(string(msg.Nonce))
-            fmt.Printf("[handleMessage] FINAL  === %s", message )
+            fmt.Printf("\nReceived: %s\nMessage: ", message )
         }
 
 
@@ -213,12 +212,11 @@ func handleMessage(msg *message.Message){
             knownXOR[i] = known.([]byte)[i] ^ msg.Data[i]
         }
 
-        fmt.Printf("[handleMessage] I have seen this but didn't send it - %d/%d\n[% x]\n", numReceived.(uint32)+1, numConns, knownXOR[:2])
+        //fmt.Printf("[handleMessage] I have seen this but didn't send it - %d/%d\n[% x]\n", numReceived.(uint32)+1, numConns, knownXOR[:2])
 
         // Store the bytes
         if numReceived.(uint32) == numConns-1 {
-            // message, _ := pendingReceivedMessages.Load(string(msg.Nonce))
-            fmt.Printf("[handleMessage] FINAL MESSAGE === %s\n\n\n", string(knownXOR))
+            fmt.Printf("\nReceived: %s\nMessage: ", string(knownXOR))
 
             // TODO: Delete from pendingReceivedMessages
         } else {
@@ -270,7 +268,7 @@ func parseKey(data []byte) bool{
 
     sharedKeys.Range(func(pk, _ interface{}) bool {
 
-        fmt.Printf("[parseKey] my keys, [% x]\n", []byte(pk.(string))[:2])
+        // fmt.Printf("[parseKey] my keys, [% x]\n", []byte(pk.(string))[:2])
 
         return true
     })
@@ -363,7 +361,7 @@ func send(m *message.Message){
 	if err != nil{
 		log.Fatal("sending error: ", err)
 	}
-	fmt.Printf("\n[send] sent [% x]\n", m.Data[:2])
+	// fmt.Printf("\n[send] sent [% x]\n", m.Data[:2])
 	// fmt.Printf("Sent %d bytes\n", n)
 }
 

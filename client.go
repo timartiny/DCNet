@@ -50,33 +50,35 @@ func receive(){
 		}
 		fmt.Printf("Received %d bytes\n", n)
 
-		for i:= 0; i<n ;{
-			protoData := new(message.Message)
-			err = proto.Unmarshal(data[i:n], protoData)
-			if err != nil{
-				log.Fatal("error unmarshalling: ", err)
-			}
-			fmt.Printf("len of protoData = %d\n", len(protoData.Data))
-			if len(protoData.Data) != n{
-				//TODO: broken except for keys
-				t, _ := proto.Marshal(protoData)
-				fmt.Printf("len of proto = %d\n", len(t))
-				i += len(t)
-				// if *protoData.Type == 1{
-				// 	i+= 2
-				// 	//working theory
-				// 	i+= len(protoData.Data)/128
-				// 	fmt.Printf("adding: %d\n",len(protoData.Data) + 4 + len(protoData.Nonce) + 2 + len(protoData.Data)/128)
-				// }else{
-				// 	fmt.Printf("adding: %d\n",len(protoData.Data) + 4 + len(protoData.Nonce))
-				// }
-			}
-			// fmt.Printf("\n[Receive] - [% x]\n", protoData.Data[:2])
-
-			// now we need to parse received message
-			go parseMessage(protoData)
-		}
+		// here we loop to determine how many messages we received.
+		go parseData(data, n)
 	}
+}
+
+// connection might receive two (or more?) packets very close together in time 
+// thus we need to ensure that the packets are handled separately, and not 
+// treated as one. Thus we loop through the length of data received and try to
+// unmarshall it all, GO only unmarshalls the first message, so we test its
+// length and if there is still more data we continue.
+func parseData(data []byte, n int){
+	for i:= 0; i<n ;{
+		protoData := new(message.Message)
+		err := proto.Unmarshal(data[i:n], protoData)
+		if err != nil{
+			log.Fatal("error unmarshalling: ", err)
+		}
+		// fmt.Printf("len of protoData = %d\n", len(protoData.Data))
+
+		if len(protoData.Data) != n{
+			t, _ := proto.Marshal(protoData)
+			// fmt.Printf("len of proto = %d\n", len(t))
+			i += len(t)
+		}
+
+		// now we need to parse received message
+		go parseMessage(protoData)
+	}
+
 }
 
 // prepMessage will compute the XOR of a given message with bytes

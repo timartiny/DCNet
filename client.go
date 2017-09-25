@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+    "sync"
     "sync/atomic"
     "github.com/golang/sync/syncmap"
 	// "time"
@@ -31,27 +32,31 @@ var pendingReceivedMessages *syncmap.Map  // [string][]byte   // Map nonce to in
 var count *syncmap.Map  // [string]int                        // number of received messages with a given nonce
 var numConns uint32
 var conn net.Conn
+var mu sync.Mutex
+var muRec sync.Mutex
 
 // receive handles the receiving of messages.
 // it puts the received data into a protobuf and passes it to a parsing function.
 func receive(){
+	data := make([]byte, 4096)
 	for {
-		data := make([]byte, 4096)
+        muRec.Lock()
 		n, err := conn.Read(data)
 		switch err {
 		case nil:
-			fmt.Printf("in nil, received %d bytes\n", n)
+			fmt.Printf("[receive] %d [% x]\n",n, data[2:4])
 		case io.EOF:
-			fmt.Printf("in EOF, received %d bytes\n", n)
+			// fmt.Printf("in EOF, received %d bytes\n", n)
 			os.Exit(0)
 		default:
 			fmt.Println("ERROR", err)
 			os.Exit(2)
 		}
-		fmt.Printf("Received %d bytes\n", n)
+		// fmt.Printf("Received %d bytes\n", n)
 
 		// here we loop to determine how many messages we received.
-		go parseData(data, n)
+        parseData(data, n)
+        muRec.Unlock()
 	}
 }
 
@@ -63,22 +68,21 @@ func receive(){
 func parseData(data []byte, n int){
 	for i:= 0; i<n ;{
 		protoData := new(message.Message)
-		err := proto.Unmarshal(data[i:n], protoData)
+		err := proto.Unmarshal(data[0:n-i], protoData)
 		if err != nil{
 			log.Fatal("error unmarshalling: ", err)
 		}
-		// fmt.Printf("len of protoData = %d\n", len(protoData.Data))
 
-		if len(protoData.Data) != n{
-			t, _ := proto.Marshal(protoData)
-			// fmt.Printf("len of proto = %d\n", len(t))
-			i += len(t)
-		}
+		t, err := proto.Marshal(protoData)
+        fmt.Printf("[parseData] i:%d - len:%d packet [% x] \n",i, len(t), t[2:4])
+        if err != nil {
+            fmt.Println(err)
+        }
+		i += len(t)
 
 		// now we need to parse received message
-		go parseMessage(protoData)
+		parseMessage(protoData)
 	}
-
 }
 
 // prepMessage will compute the XOR of a given message with bytes
@@ -117,7 +121,7 @@ func prepMessage(msg []byte, nonce []byte) ([]byte, error) {
 func parseMessage(msg *message.Message){
 	if *msg.Type == 0{
 		//received a key
-		fmt.Printf("[parseMessage] received key, [% x]\n", msg.Data[:2])
+		// fmt.Printf("[parseMessage] received key, [% x]\n", msg.Data[:2])
 		newKey := parseKey(msg.Data)
 
 		if newKey{
@@ -130,7 +134,7 @@ func parseMessage(msg *message.Message){
 		}
 	}else if *msg.Type == 1{
 		//received a new message
-		fmt.Printf("[parseMessage] Type 1: Received: [% x]\n", msg.Data)
+		fmt.Printf("[parseMessage] Type 1: [% x]\n", msg.Data)
 		handleMessage(msg)
 
 	}else if *msg.Type ==2{
@@ -155,6 +159,8 @@ func parseMessage(msg *message.Message){
 // handleMessage will run when a new message (type 1) is received and will
 // send out replies, does not handle other replies.
 func handleMessage(msg *message.Message){
+    mu.Lock()
+    defer mu.Unlock()
 
     if pendingReceivedMessages == nil{
         pendingReceivedMessages = new(syncmap.Map) //, string, []byte
@@ -168,7 +174,7 @@ func handleMessage(msg *message.Message){
         count = new(syncmap.Map)  // string. int
     }
 
-    _, psm := pendingSentMessages.Load(string(msg.Nonce))
+    mySentMsg, psm := pendingSentMessages.Load(string(msg.Nonce))
     known, prm := pendingReceivedMessages.Load(string(msg.Nonce))
 
     if  psm {
@@ -176,7 +182,7 @@ func handleMessage(msg *message.Message){
         // really doesn't need to do anything at all except display the message, it knows what it sent.
         numReceived, _ := count.Load(string(msg.Nonce))
 		count.Store(string(msg.Nonce), numReceived.(uint32)+1 )
-        fmt.Printf("[handleMessage] I sent this message - %d\n", numReceived.(uint32)+1 )
+        fmt.Printf("[handleMessage] I sent this message - %d\n%s\n", numReceived.(uint32)+1, mySentMsg)
     } else if !prm {
         // We have never seen this nonce - send our response and store
         fmt.Printf("[handleMessage] I have NOT seen this and didn't send it - 1/%d\n", numConns)
@@ -207,12 +213,15 @@ func handleMessage(msg *message.Message){
             knownXOR[i] = known.([]byte)[i] ^ msg.Data[i]
         }
 
+        fmt.Printf("[handleMessage] I have seen this but didn't send it - %d/%d\n[% x]\n", numReceived.(uint32)+1, numConns, knownXOR[:2])
+
         // Store the bytes
         if numReceived.(uint32) == numConns-1 {
-            message, _ := pendingReceivedMessages.Load(string(msg.Nonce))
-            fmt.Printf("[handleMessage] FINAL MESSAGE === %s\n\n\n", message)
+            // message, _ := pendingReceivedMessages.Load(string(msg.Nonce))
+            fmt.Printf("[handleMessage] FINAL MESSAGE === %s\n\n\n", string(knownXOR))
+
+            // TODO: Delete from pendingReceivedMessages
         } else {
-            fmt.Printf("[handleMessage] I have seen this but didn't send it - %d/%d\n", numReceived.(uint32)+1, numConns)
             pendingReceivedMessages.Store(string(msg.Nonce), knownXOR)
         }
     }
@@ -227,7 +236,7 @@ func parseKey(data []byte) bool{
 	// have the shared key.
 	if bytes.Equal(data, curve.Marshal(pubKey)){
 		//this is our key
-		fmt.Println("[parseKey] this is my Key")
+		// fmt.Println("[parseKey] this is my Key")
 		return false
 	}
 
@@ -243,31 +252,28 @@ func parseKey(data []byte) bool{
 		sharedKeys = new(syncmap.Map ) // string, []byte
 	}
 
-	_, ok := sharedKeys.Load(string(data))
-	if ok{
-		// already have this key
-		fmt.Println("[parseKey] i have this key")
-		return false
-	}
-	fmt.Println("[parseKey] i don't have this key")
-
-
-    // don't have this key
 	newSharedKey, err := curve.GenerateSharedSecret(privKey, otherKey)
 	if err != nil {
 		fmt.Println("couldn't generate shared secret, err=",err)
 		return false
 	}
 
-    sharedKeys.Store(string(data), newSharedKey)
+	_, loaded := sharedKeys.LoadOrStore(string(data), newSharedKey)
+	if loaded{
+		// already have this key
+		// fmt.Println("[parseKey] i have this key")
+		return false
+	}else {
+        // The key was stored
+        atomic.AddUint32(&numConns, 1)
+    }
 
-    atomic.AddUint32(&numConns, 1)
-	    sharedKeys.Range(func(pk, _ interface{}) bool {
+    sharedKeys.Range(func(pk, _ interface{}) bool {
 
-			fmt.Printf("[parseKey] my keys, [% x]\n", []byte(pk.(string))[:2])
+        fmt.Printf("[parseKey] my keys, [% x]\n", []byte(pk.(string))[:2])
 
-	        return true
-	    })
+        return true
+    })
 	// fmt.Println("added new key!")
 	return true;
 }
@@ -312,7 +318,7 @@ func sendMessage( msg string) error {
 
     // Send the message out to the other clients
     pendingSentMessages.Store(string(nonce), msg)
-	count.Store(string(nonce), uint32(1))
+	count.Store(string(nonce), uint32(0))
     send(m)
 
     return nil

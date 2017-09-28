@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/golang/protobuf/proto"
-	"./message"
+        "github.com/IanMartiny/DCNet/message"
 )
 
 var port = "0.0.0.0:9001"

@@ -17,9 +17,9 @@ import (
 	// "time"
 
 	"github.com/golang/protobuf/proto"
-	"./go-ecdh"
-	"./message"
-    "./prng"
+	"github.com/IanMartiny/DCNet/go-ecdh"
+	"github.com/IanMartiny/DCNet/message"
+    "github.com/IanMartiny/DCNet/prng"
 )
 
 var port = "0.0.0.0:9001"
